@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+build/
+dist/
+*.spec
+
+data/settings.json
+data/packs/*
+!data/packs/.gitkeep
+
+*.log
+.idea/
+.vscode/
