@@ -121,7 +121,7 @@ class DAPDownloaderApp(QMainWindow):
             min_height = max(540, min(620, available.height() - 48))
             self.setMinimumSize(min_width, min_height)
             initial_width = min(1120, max(min_width, int(available.width() * 0.84)))
-            initial_height = min(760, max(min_height, int(available.height() * 0.84)))
+            initial_height = min(820, max(min_height, int(available.height() * 0.84)))
             self.resize(initial_width, initial_height)
         else:
             self.resize(1120, 760)
@@ -412,6 +412,7 @@ class DAPDownloaderApp(QMainWindow):
     def _field_label(self, zh: str, en: str) -> QLabel:
         label = self._register_text(QLabel(), zh, en)
         label.setObjectName("FieldLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         return label
 
     def _secondary_button(self, zh: str, slot, en: str | None = None) -> QPushButton:
@@ -514,6 +515,8 @@ class DAPDownloaderApp(QMainWindow):
         if hasattr(self, "firmware_combo"):
             self._update_control_tooltips()
         self._update_language_dynamic_text()
+        if hasattr(self, "content"):
+            QTimer.singleShot(0, self._refresh_text_minimum_heights)
 
     def _update_language_dynamic_text(self) -> None:
         if not hasattr(self, "operation_label"):
@@ -1235,9 +1238,13 @@ class DAPDownloaderApp(QMainWindow):
             self._update_responsive_layout()
 
     def _update_responsive_layout(self, force: bool = False) -> None:
-        compact = self.width() < 1020
+        # The normal layout needs substantially more vertical room once Windows
+        # font scaling is applied. Use the dense layout based on both dimensions
+        # so Qt never resolves the shortage by flattening text-bearing widgets.
+        compact = self.width() < 1080 or self.height() < 800
         stacked = self.width() < 860 and self.height() >= 850
-        layout_mode = (compact, stacked)
+        short_header = self.width() < 980 or self.height() < 680
+        layout_mode = (compact, stacked, short_header)
         previous_mode = getattr(self, "_layout_mode", None)
         if not force and layout_mode == previous_mode:
             return
@@ -1285,9 +1292,9 @@ class DAPDownloaderApp(QMainWindow):
         self.form_card.setMinimumWidth(690)
         self.log_frame.setMinimumWidth(160 if compact else 240)
 
-        self.subtitle_label.setVisible(not compact)
-        self.badge.setVisible(not compact)
-        self.target_hint.setVisible(not compact)
+        self.subtitle_label.setVisible(not short_header)
+        self.badge.setVisible(not short_header)
+        self.target_hint.setVisible(self.height() >= 700)
         self.header_layout.setSpacing(10 if compact else 16)
         self.operation_layout.setContentsMargins(*(8, 5, 8, 5) if compact else (12, 9, 12, 9))
 
@@ -1305,6 +1312,39 @@ class DAPDownloaderApp(QMainWindow):
             else Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
         self.header_layout.setContentsMargins(*(14, 8, 14, 8) if compact else (24, 18, 24, 18))
+        self._refresh_text_minimum_heights()
+
+    def _refresh_text_minimum_heights(self) -> None:
+        """Keep every text control tall enough for its resolved screen font."""
+        if not hasattr(self, "root_widget"):
+            return
+
+        controls = [
+            *self.root_widget.findChildren(QLineEdit),
+            *self.root_widget.findChildren(QComboBox),
+            *self.root_widget.findChildren(QPushButton),
+            *self.root_widget.findChildren(QCheckBox),
+        ]
+        labels = self.root_widget.findChildren(QLabel)
+
+        # Clear previous programmatic values first because compact-mode style
+        # changes can legitimately reduce padding while keeping the same font.
+        for widget in (*controls, *labels):
+            widget.setMinimumHeight(0)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        for widget in controls:
+            font_height = QFontMetrics(widget.font()).lineSpacing()
+            widget.setMinimumHeight(max(widget.sizeHint().height(), font_height + 4))
+
+        for label in labels:
+            font_height = QFontMetrics(label.font()).lineSpacing()
+            if label.wordWrap():
+                required_height = max(label.sizeHint().height(), font_height)
+            else:
+                required_height = max(label.sizeHint().height(), font_height)
+            label.setMinimumHeight(required_height)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
         if self.flash_process is not None and self.flash_process.poll() is None:
@@ -1320,11 +1360,45 @@ class DAPDownloaderApp(QMainWindow):
         event.accept()
 
 
+def _configure_application_font(app: QApplication) -> None:
+    """Select a readable UI font and explicitly load Windows fallbacks if needed."""
+    preferred_families = (
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Segoe UI",
+        "Arial",
+    )
+    available = set(QFontDatabase.families())
+
+    # Some restricted or off-screen Qt environments do not enumerate Windows
+    # fonts even though the files exist. Register the common UI fonts directly
+    # so the application still has real Latin and CJK glyphs.
+    if os.name == "nt" and not available.intersection(preferred_families):
+        for font_path in (
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "msyh.ttc",
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "msyhbd.ttc",
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeui.ttf",
+            Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "consola.ttf",
+        ):
+            if font_path.is_file():
+                QFontDatabase.addApplicationFont(str(font_path))
+        available = set(QFontDatabase.families())
+
+    ui_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    for family in preferred_families:
+        if family in available:
+            ui_font.setFamily(family)
+            break
+    ui_font.setPointSizeF(10.0)
+    app.setFont(ui_font)
+
+
 def _apply_styles(app: QApplication) -> None:
     app.setStyle("Fusion")
+    _configure_application_font(app)
     app.setStyleSheet(
         """
-        QWidget { font-family: "Microsoft YaHei UI"; font-size: 10pt; color: #172b3f; }
+        QWidget { font-size: 10pt; color: #172b3f; }
         QWidget#Root { background: #f1f5f9; }
         QFrame#Header { background: #102a43; border-radius: 12px; }
         QLabel#Title { color: #ffffff; font-size: 20pt; font-weight: 700; }
