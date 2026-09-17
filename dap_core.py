@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 
-APP_NAME = "DAP-Downloader"
+APP_VERSION = "0.0.1"
+APP_NAME = f"DAP-Downloader v{APP_VERSION}"
 DEFAULT_TARGET = "STM32H562VGTx"
 DEFAULT_FREQUENCY = "1m"
 DEFAULT_CONNECT_MODE = "under-reset"

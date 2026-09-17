@@ -2,6 +2,8 @@
 
 面向 STM32H5 的 Windows CMSIS-DAP 固件下载工具。当前默认配置用于 TC-GU-01 的 STM32H562VGT6：
 
+当前版本：`v0.0.1`
+
 - Target：`STM32H562VGTx`
 - SWD 频率：`1 MHz`
 - 连接方式：`under-reset`
@@ -57,7 +59,7 @@ CMSIS Pack 文件不会提交到 Git 仓库。首次使用时工具会从官方�
 双击 `build_exe.bat`。输出目录为：
 
 ```text
-dist\DAP-Downloader.exe
+dist\DAP-Downloader-v0.0.1.exe
 ```
 
 这是一个独立的 Windows 单文件程序，可直接复制到其他 Windows 电脑运行。首次运行后，程序会在 EXE 同目录创建 `data` 目录，用于保存设置和 CMSIS Pack 缓存；若该目录不可写，则改用当前用户的本地应用数据目录。
