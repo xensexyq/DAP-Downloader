@@ -57,10 +57,10 @@ CMSIS Pack 文件不会提交到 Git 仓库。首次使用时工具会从官方�
 双击 `build_exe.bat`。输出目录为：
 
 ```text
-dist\DAP-Downloader\
+dist\DAP-Downloader.exe
 ```
 
-将整个 `DAP-Downloader` 文件夹复制到其他 Windows 电脑即可运行。
+这是一个独立的 Windows 单文件程序，可直接复制到其他 Windows 电脑运行。首次运行后，程序会在 EXE 同目录创建 `data` 目录，用于保存设置和 CMSIS Pack 缓存；若该目录不可写，则改用当前用户的本地应用数据目录。
 
 ## 下载结果判断
 
