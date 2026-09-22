@@ -1,0 +1,150 @@
+name: Cross-platform checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.11 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            python: .venv/bin/python
+          - os: windows-latest
+            python: .venv/Scripts/python.exe
+    defaults:
+      run:
+        shell: bash
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Install Linux native libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libgl1 libusb-1.0-0 libudev1 \
+            libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 xvfb xauth
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          "${{ matrix.python }}" -m pip install --upgrade pip
+          "${{ matrix.python }}" -m pip install -r requirements-build.txt
+
+      - name: Core, platform, GUI and CLI tests
+        run: '"${{ matrix.python }}" -m unittest discover -v'
+
+      - name: Source CLI smoke check
+        run: '"${{ matrix.python }}" dap_tool.py --pyocd-cli --version'
+
+      - name: Check Linux shell scripts
+        if: runner.os == 'Linux'
+        run: bash -n run_tool.sh build_linux.sh scripts/install_udev_rules.sh
+
+      - name: Build Linux distribution
+        if: runner.os == 'Linux'
+        run: bash build_linux.sh
+
+      - name: Packaged CLI smoke check
+        if: runner.os == 'Linux'
+        run: |
+          version="$(.venv/bin/python -c 'from dap_core import APP_VERSION; print(APP_VERSION)')"
+          name="DAP-Downloader-v${version}-linux-$(uname -m)"
+          "dist/${name}/${name}" --pyocd-cli --version
+          "dist/${name}/${name}" --pyocd-cli json --probes > dist/probes-smoke.json
+          .venv/bin/python - "$PWD/dist/${name}/${name}" <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("dist/probes-smoke.json").read_text())
+          assert result["status"] == 0, result
+          assert isinstance(result["boards"], list), result
+
+          import shutil
+          import subprocess
+          import sys
+          import urllib.request
+          from dap_core import DEFAULT_TARGET, PACK_FILENAME, PACK_URL
+
+          pack = Path("build") / PACK_FILENAME
+          with urllib.request.urlopen(PACK_URL, timeout=60) as source, pack.open("wb") as destination:
+              shutil.copyfileobj(source, destination)
+          completed = subprocess.run(
+              [sys.argv[1], "--pyocd-cli", "json", "-t", "--pack", str(pack.resolve())],
+              capture_output=True, text=True, timeout=60,
+          )
+          assert completed.returncode == 0, completed.stdout + completed.stderr
+          targets = json.loads(completed.stdout)
+          assert targets["status"] == 0, targets
+          assert any(target["name"] == DEFAULT_TARGET.lower() for target in targets["targets"]), targets
+          PY
+
+      - name: Packaged GUI startup on X11
+        if: runner.os == 'Linux'
+        run: |
+          version="$(.venv/bin/python -c 'from dap_core import APP_VERSION; print(APP_VERSION)')"
+          name="DAP-Downloader-v${version}-linux-$(uname -m)"
+          xvfb-run -a .venv/bin/python - "$PWD/dist/${name}/${name}" <<'PYCODE'
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          with tempfile.TemporaryDirectory() as temporary:
+              environment = os.environ.copy()
+              environment["QT_QPA_PLATFORM"] = "xcb"
+              environment["XDG_CONFIG_HOME"] = str(Path(temporary) / "config")
+              environment["XDG_CACHE_HOME"] = str(Path(temporary) / "cache")
+              process = subprocess.Popen(
+                  [sys.argv[1]],
+                  env=environment,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+              )
+              try:
+                  try:
+                      process.wait(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      pass  # The GUI should remain open until explicitly stopped.
+                  else:
+                      raise AssertionError(f"GUI exited during startup: {process.returncode}")
+              finally:
+                  if process.poll() is None:
+                      process.terminate()
+                  try:
+                      output, _ = process.communicate(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      output, _ = process.communicate(timeout=10)
+                  print(output)
+          PYCODE
+
+      - name: Upload Linux distribution
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DAP-Downloader-linux-x86_64
+          path: dist/DAP-Downloader-v*-linux-*.tar.gz
+          if-no-files-found: error

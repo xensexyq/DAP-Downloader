@@ -9,6 +9,28 @@ import threading
 import urllib.request
 from pathlib import Path
 
+
+def _run_embedded_pyocd() -> int | None:
+    if len(sys.argv) < 2 or sys.argv[1] != "--pyocd-cli":
+        return None
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYOCD_COLOR", "never")
+    # Frozen Python does not honour PYTHONUNBUFFERED at interpreter startup.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    from pyocd.__main__ import PyOCDTool
+
+    return PyOCDTool().run(sys.argv[2:])
+
+
+# The worker and diagnostic CLI must also run on machines without Qt/X11.
+if __name__ == "__main__":
+    _cli_result = _run_embedded_pyocd()
+    if _cli_result is not None:
+        raise SystemExit(_cli_result)
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFontDatabase, QFontMetrics, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
@@ -47,9 +69,10 @@ from dap_core import (
     PACK_URL,
     build_pyocd_load_args,
     discover_firmware,
-    format_windows_command,
     validate_flash_settings,
 )
+
+from dap_platform import format_command, get_app_paths, path_key
 
 
 class SafeComboBox(QComboBox):
@@ -76,35 +99,10 @@ class SafeComboBox(QComboBox):
         super().showPopup()
 
 
-def _run_embedded_pyocd() -> int | None:
-    if len(sys.argv) < 2 or sys.argv[1] != "--pyocd-cli":
-        return None
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-    os.environ.setdefault("PYTHONUTF8", "1")
-    os.environ.setdefault("PYOCD_COLOR", "never")
-    from pyocd.__main__ import PyOCDTool
-
-    return PyOCDTool().run(sys.argv[2:])
-
-
 def _application_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
-
-
-def _data_dir(app_dir: Path) -> Path:
-    preferred = app_dir / "data"
-    try:
-        preferred.mkdir(parents=True, exist_ok=True)
-        test_file = preferred / ".write_test"
-        test_file.write_text("ok", encoding="utf-8")
-        test_file.unlink(missing_ok=True)
-        return preferred
-    except OSError:
-        fallback = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DAP-Downloader"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
 
 
 class DAPDownloaderApp(QMainWindow):
@@ -127,13 +125,15 @@ class DAPDownloaderApp(QMainWindow):
             self.resize(1120, 760)
 
         self.app_dir = _application_dir()
-        self.data_dir = _data_dir(self.app_dir)
-        self.settings_file = self.data_dir / "settings.json"
-        self.default_pack = self.data_dir / "packs" / PACK_FILENAME
-        self.default_pack.parent.mkdir(parents=True, exist_ok=True)
+        paths = get_app_paths(self.app_dir)
+        self.settings_file = paths.settings_file
+        self.default_pack = paths.pack_dir / PACK_FILENAME
 
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.flash_process: subprocess.Popen[str] | None = None
+        self._flash_lock = threading.Lock()
+        self._flash_cancel = threading.Event()
+        self._flash_thread: threading.Thread | None = None
         self.firmware_by_label: dict[str, Path] = {}
         self.probe_by_label: dict[str, str] = {}
         self.settings = self._load_settings()
@@ -704,6 +704,8 @@ class DAPDownloaderApp(QMainWindow):
     def _load_settings(self) -> dict[str, object]:
         try:
             settings = json.loads(self.settings_file.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                return {}
             saved_pack = Path(str(settings.get("pack", "")))
             if saved_pack.name == PACK_FILENAME and not saved_pack.is_file():
                 settings["pack"] = str(self.default_pack)
@@ -734,7 +736,7 @@ class DAPDownloaderApp(QMainWindow):
         for start in [self.app_dir, Path.cwd()]:
             for parent in [start, *list(start.parents)[:5]]:
                 for candidate in [parent / "tc-gu-01" / "build", parent / "build"]:
-                    key = str(candidate).casefold()
+                    key = path_key(candidate)
                     if key not in seen and candidate.is_dir():
                         roots.append(candidate)
                         seen.add(key)
@@ -828,7 +830,21 @@ class DAPDownloaderApp(QMainWindow):
             result = [(probe.description or "CMSIS-DAP", probe.unique_id) for probe in probes]
             self.events.put(("probes", result))
         except Exception as exc:
-            self.events.put(("error", self._tr(f"探针检测失败：{exc}", f"Probe detection failed: {exc}")))
+            message = self._tr(f"探针检测失败：{exc}", f"Probe detection failed: {exc}")
+            if sys.platform.startswith("linux"):
+                message += "\n" + self._probe_connection_hint()
+            self.events.put(("error", message))
+
+    def _probe_connection_hint(self) -> str:
+        if sys.platform.startswith("linux"):
+            return self._tr(
+                "请连接 CMSIS-DAP 探针。若已连接，请按 README 安装 udev 规则后重新插拔 USB，再刷新探针。",
+                "Connect a CMSIS-DAP probe. If already connected, install the udev rules described in README, reconnect USB, and refresh probes.",
+            )
+        return self._tr(
+            "请连接 CMSIS-DAP 调试器，并确认 USB 驱动和 SWD 接线正常。",
+            "Connect a CMSIS-DAP probe and check the USB driver and SWD wiring.",
+        )
 
     def _update_pack_status(self) -> None:
         pack = Path(self.pack_edit.text().strip())
@@ -931,7 +947,7 @@ class DAPDownloaderApp(QMainWindow):
     def _pyocd_command(self, args: list[str]) -> list[str]:
         if getattr(sys, "frozen", False):
             return [sys.executable, "--pyocd-cli", *args]
-        return [sys.executable, str(Path(__file__).resolve()), "--pyocd-cli", *args]
+        return [sys.executable, "-u", str(Path(__file__).resolve()), "--pyocd-cli", *args]
 
     def _launch_flash(self, firmware: Path, pack: Path, probe_uid: str) -> None:
         try:
@@ -952,44 +968,79 @@ class DAPDownloaderApp(QMainWindow):
 
         command = self._pyocd_command(args)
         self.log.clear()
-        self._append_log(self._tr("执行命令：\n", "Command:\n") + format_windows_command(command) + "\n\n", "command")
+        self._append_log(self._tr("执行命令：\n", "Command:\n") + format_command(command) + "\n\n", "command")
         self._set_busy(True, self._tr("正在连接目标板，请勿断开 USB 或目标板电源…", "Connecting to target. Do not disconnect USB or target power…"), "flash")
-        threading.Thread(target=self._flash_worker, args=(command,), daemon=True).start()
+        self._flash_cancel.clear()
+        self._flash_thread = threading.Thread(target=self._flash_worker, args=(command,), daemon=True)
+        self._flash_thread.start()
 
     def _flash_worker(self, command: list[str]) -> None:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
         env["PYOCD_COLOR"] = "never"
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        process = None
         try:
-            self.flash_process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env=env,
-                creationflags=creationflags,
-            )
+            # Serialize startup with cancellation so closing cannot leave a worker
+            # starting after the GUI (or its frozen bundle) has already exited.
+            with self._flash_lock:
+                if self._flash_cancel.is_set():
+                    self.events.put(("flash_done", -1))
+                    return
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    env=env,
+                    creationflags=creationflags,
+                )
+                self.flash_process = process
             self.events.put(("flash_started", None))
-            assert self.flash_process.stdout is not None
-            for line in self.flash_process.stdout:
+            assert process.stdout is not None
+            for line in process.stdout:
                 self.events.put(("log", line))
-            return_code = self.flash_process.wait()
+            return_code = process.wait()
             self.events.put(("flash_done", return_code))
         except Exception as exc:
             self.events.put(("error", self._tr(f"无法启动 pyOCD：{exc}", f"Unable to start pyOCD: {exc}")))
         finally:
-            self.flash_process = None
+            if process is not None:
+                if process.poll() is None:
+                    self._terminate_flash_process()
+                if process.stdout is not None:
+                    process.stdout.close()
+            with self._flash_lock:
+                self.flash_process = None
+
+    def _terminate_flash_process(self) -> None:
+        self._flash_cancel.set()
+        with self._flash_lock:
+            process = self.flash_process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            # The worker can exit between poll() and terminate()/kill().
+            pass
 
     def stop_flash(self) -> None:
-        process = self.flash_process
-        if process is not None and process.poll() is None:
-            process.terminate()
-            self._append_log(self._tr("\n用户已请求停止。\n", "\nStop requested by user.\n"), "error")
+        self._flash_cancel.set()
+        self.stop_button.setEnabled(False)
+        threading.Thread(target=self._terminate_flash_process, daemon=True).start()
+        self._append_log(self._tr("\n用户已请求停止。\n", "\nStop requested by user.\n"), "error")
 
     def _set_busy(self, busy: bool, status: str, state_hint: str = "") -> None:
         self._busy = busy
@@ -1139,10 +1190,7 @@ class DAPDownloaderApp(QMainWindow):
                         self._set_status_state("warning")
                         self._set_operation_message(
                             self._tr("等待连接 DAP 探针", "Waiting for DAP Probe"),
-                            self._tr(
-                                "请连接 CMSIS-DAP 调试器，并确认 USB 驱动和 SWD 接线正常。",
-                                "Connect a CMSIS-DAP probe and check the USB driver and SWD wiring.",
-                            ),
+                            self._probe_connection_hint(),
                             "warning",
                             "!",
                         )
@@ -1241,7 +1289,8 @@ class DAPDownloaderApp(QMainWindow):
         # The normal layout needs substantially more vertical room once Windows
         # font scaling is applied. Use the dense layout based on both dimensions
         # so Qt never resolves the shortage by flattening text-bearing widgets.
-        compact = self.width() < 1080 or self.height() < 800
+        normal_minimum_height = getattr(self, "_normal_layout_minimum_height", 800)
+        compact = self.width() < 1080 or self.height() < max(800, normal_minimum_height)
         stacked = self.width() < 860 and self.height() >= 850
         short_header = self.width() < 980 or self.height() < 680
         layout_mode = (compact, stacked, short_header)
@@ -1346,8 +1395,34 @@ class DAPDownloaderApp(QMainWindow):
                 required_height = max(label.sizeHint().height(), font_height)
             label.setMinimumHeight(required_height)
 
+        # Font and stylesheet metrics vary across Qt platforms. A fixed height
+        # breakpoint alone can leave less room than the form's actual minimum;
+        # Qt then shrinks grid cells underneath their minimum-height controls.
+        for grid in (self.firmware_grid, self.pack_grid, self.options_grid):
+            grid.invalidate()
+            grid.parentWidget().updateGeometry()
+        self.form_layout.invalidate()
+        self.form_card.updateGeometry()
+        self.header_layout.invalidate()
+        self.header_layout.parentWidget().updateGeometry()
+        self.outer.invalidate()
+        self.outer.activate()
+        required_height = self.minimumSizeHint().height()
+        if not self._compact_mode:
+            self._normal_layout_minimum_height = required_height
+            if self.height() < required_height:
+                self._update_responsive_layout(force=True)
+                return
+
+        baseline = getattr(self, "_base_minimum_height", self.minimumHeight())
+        self._base_minimum_height = baseline
+        # Keep enough resize range to reach the layout with its short header;
+        # imposing the tall-header minimum here would make that mode unreachable.
+        smallest_layout = self._compact_mode and self._layout_mode[2]
+        self.setMinimumHeight(max(baseline, required_height) if smallest_layout else baseline)
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
-        if self.flash_process is not None and self.flash_process.poll() is None:
+        if self._flashing or (self.flash_process is not None and self.flash_process.poll() is None):
             if not self._confirm_simple(
                 self._tr("确认退出", "Confirm Exit"),
                 self._tr("固件仍在下载，确定要停止并退出吗？", "Firmware download is still running. Stop it and exit?"),
@@ -1355,18 +1430,26 @@ class DAPDownloaderApp(QMainWindow):
             ):
                 event.ignore()
                 return
-            self.flash_process.terminate()
+            self._terminate_flash_process()
+            if self._flash_thread is not None:
+                self._flash_thread.join(timeout=7)
         self._save_settings()
         event.accept()
 
 
 def _configure_application_font(app: QApplication) -> None:
-    """Select a readable UI font and explicitly load Windows fallbacks if needed."""
+    """Select a readable font with CJK coverage on Linux and Windows."""
     preferred_families = (
         "Microsoft YaHei UI",
         "Microsoft YaHei",
         "Segoe UI",
         "Arial",
+    ) if os.name == "nt" else (
+        "Noto Sans CJK SC",
+        "Source Han Sans SC",
+        "WenQuanYi Micro Hei",
+        "Noto Sans",
+        "DejaVu Sans",
     )
     available = set(QFontDatabase.families())
 
@@ -1500,10 +1583,15 @@ def main() -> int:
     try:
         import pyocd  # noqa: F401
     except ImportError:
-        QMessageBox.critical(app.activeWindow(), APP_NAME, "未安装 pyOCD。请先运行 run_tool.bat 安装依赖。")
+        launcher = "run_tool.bat" if os.name == "nt" else "./run_tool.sh"
+        QMessageBox.critical(app.activeWindow(), APP_NAME, f"未安装 pyOCD。请先运行 {launcher} 安装依赖。")
         return 1
 
-    window = DAPDownloaderApp()
+    try:
+        window = DAPDownloaderApp()
+    except OSError as exc:
+        QMessageBox.critical(None, APP_NAME, f"无法创建应用数据目录 / Cannot create application data directories:\n{exc}")
+        return 1
     window.show()
     return app.exec()
 

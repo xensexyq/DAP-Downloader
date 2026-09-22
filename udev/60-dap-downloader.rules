@@ -1,0 +1,12 @@
+# CMSIS-DAP probe access for the active local desktop user (systemd-logind).
+# Install before 73-seat-late.rules so TAG+="uaccess" receives a session ACL.
+# USB nodes are required for pyOCD's default Linux v1 and v2 libusb backends.
+# hidraw nodes additionally support the optional hidapi backend.
+# Scope access to named CMSIS-DAP products, never all USB or HID devices.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{product}=="*CMSIS-DAP*", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{product}=="*CMSIS-DAP*", MODE="0660", TAG+="uaccess"
+
+# DAPLink VID/PID, as documented by pyOCD v0.45.1:
+# https://github.com/pyocd/pyOCD/blob/v0.45.1/udev/50-cmsis-dap.rules
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0d28", ATTR{idProduct}=="0204", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0660", TAG+="uaccess"

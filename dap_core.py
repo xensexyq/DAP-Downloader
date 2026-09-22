@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from dap_platform import path_key
+
 
 APP_VERSION = "0.0.1"
 APP_NAME = f"DAP-Downloader v{APP_VERSION}"
@@ -81,7 +83,7 @@ def discover_firmware(search_roots: Iterable[Path]) -> list[FirmwareCandidate]:
                     stat = path.stat()
                 except OSError:
                     continue
-                key = str(path.resolve()).casefold()
+                key = path_key(path)
                 kind = _firmware_kind(path)
                 label = f"{kind} | {path.name} | {path.parent}"
                 found[key] = FirmwareCandidate(
@@ -162,6 +164,9 @@ def build_pyocd_load_args(
     args = [
         "load",
         str(Path(firmware)),
+        "--format",
+        "elf" if Path(firmware).suffix.lower() == ".axf" else Path(firmware).suffix.lower()[1:],
+        "--no-wait",
         "--pack",
         str(Path(pack)),
         "--target",
