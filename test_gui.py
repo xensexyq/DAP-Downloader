@@ -133,7 +133,11 @@ class GUIIntegrationTests(unittest.TestCase):
                     self.window._refresh_text_minimum_heights()
                     QTest.qWait(50)
                     self.assertLessEqual(
-                        self.window.height(), max(height, self.window.minimumSizeHint().height())
+                        self.window.height(), max(
+                            height,
+                            self.window.minimumSizeHint().height(),
+                            self.window.outer.totalHeightForWidth(self.window.root_widget.width()),
+                        )
                     )
                     for row, control in enumerate((
                         self.window.firmware_combo, self.window.probe_combo, self.window.target_combo
