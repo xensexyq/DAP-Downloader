@@ -140,7 +140,12 @@ class GUIIntegrationTests(unittest.TestCase):
                     )):
                         cell = self.window.firmware_grid.cellRect(row, 1)
                         self.assertGreaterEqual(control.geometry().top(), cell.top())
-                        self.assertLessEqual(control.geometry().bottom(), cell.bottom())
+                        self.assertLessEqual(
+                            control.geometry().bottom(), cell.bottom(),
+                            f"font={control.font().family()}, compact={self.window._compact_mode}, "
+                            f"section={control.parentWidget().geometry()}, cell={cell}, "
+                            f"control={control.geometry()}",
+                        )
                     for grid in (self.window.firmware_grid, self.window.pack_grid, self.window.options_grid):
                         widgets = [grid.itemAt(i).widget() for i in range(grid.count())]
                         visible = [widget for widget in widgets if widget is not None and widget.isVisible()]

@@ -1400,7 +1400,13 @@ class DAPDownloaderApp(QMainWindow):
         # Qt then shrinks grid cells underneath their minimum-height controls.
         for grid in (self.firmware_grid, self.pack_grid, self.options_grid):
             grid.invalidate()
-            grid.parentWidget().updateGeometry()
+            section = grid.parentWidget()
+            # A nested group box may otherwise be allocated less than its
+            # grid minimum after a language/style change, even when the outer
+            # window reports a sufficient minimumSizeHint.
+            section.setMinimumHeight(0)
+            section.setMinimumHeight(section.minimumSizeHint().height())
+            section.updateGeometry()
         self.form_layout.invalidate()
         self.form_card.updateGeometry()
         self.header_layout.invalidate()
