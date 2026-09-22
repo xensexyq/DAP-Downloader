@@ -1405,9 +1405,15 @@ class DAPDownloaderApp(QMainWindow):
         self.form_card.updateGeometry()
         self.header_layout.invalidate()
         self.header_layout.parentWidget().updateGeometry()
+        self.content.invalidate()
         self.outer.invalidate()
         self.outer.activate()
-        required_height = self.minimumSizeHint().height()
+        # minimumSizeHint alone omits the extra height of wrapped labels at
+        # the current width (notably the English probe guidance on Linux).
+        required_height = max(
+            self.minimumSizeHint().height(),
+            self.outer.totalHeightForWidth(self.root_widget.width()),
+        )
         if not self._compact_mode:
             self._normal_layout_minimum_height = required_height
             if self.height() < required_height:
