@@ -258,6 +258,15 @@ Erased ... bytes, programmed ... bytes
 
 下载操作会擦除并覆盖目标 MCU 的相关 Flash 区域。开启读保护或安全产品状态时，请先使用 STM32CubeProgrammer 检查 Option Bytes，不要盲目执行整片擦除。
 
-## 许可
+## 致谢与许可
+
+### 致谢与参考项目
+
+- [pyOCD](https://pyocd.io/docs/installing#udev-rules-on-linux)：探针访问与烧录后端，Linux 权限配置参考其官方说明。
+- [Qt for Python / PySide6](https://doc.qt.io/qtforpython-6.8/gettingstarted.html)：图形界面依赖；运行库参照 [Qt 6.8 Linux 说明](https://doc.qt.io/qt-6.8/linux-requirements.html)。
+- [PyInstaller](https://pyinstaller.org/en/stable/usage.html#making-linux-apps-forward-compatible)：独立程序打包工具；打包不改变依赖授权。
+- Keil STM32H5 CMSIS Device Pack：目标芯片支持资源，按需下载，不作为本仓库自有代码重新授权。
+
+### 许可
 
 当前仓库未声明统一许可证；现有第三方代码、模型和依赖的署名及许可仍须分别遵守。本次文档整理不新增或变更授权。
