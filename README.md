@@ -1,4 +1,12 @@
+<div align="center">
+
 # DAP-Downloader
+
+**面向 STM32H5 的 Windows / Linux CMSIS-DAP 固件下载工具**
+
+[功能](#功能) · [安装](#安装) · [基本使用](#基本使用) · [文档](#文档) · [安全说明](#安全说明)
+
+</div>
 
 面向 STM32H5 的 Windows / Linux CMSIS-DAP 固件下载工具。当前默认配置用于 TC-GU-01 的 STM32H562VGT6：
 
@@ -20,6 +28,21 @@
 - 下拉框未获得焦点时，鼠标滚轮不会意外修改参数。
 - 下载进度条仅在烧录固件时显示，并根据擦除、编程、校验和复位阶段从 0% 前进到 100%。
 - 下载前显示高对比度参数确认窗口，默认开启安全确认。
+
+## 系统架构
+
+PySide6 界面负责固件选择、参数确认和结果显示；`dap_core.py` 与 pyOCD 完成探针及烧录流程；`dap_platform.py` 管理平台路径。CMSIS Device Pack 按需下载并缓存，不随源码提交。
+
+**烧录会擦写目标 Flash，不是只读诊断。** 使用前核对目标芯片、供电、接线和固件地址，保留[安全说明](#安全说明)。
+
+## 安装
+
+先获取源码，再选择下方 Conda 环境或对应系统启动脚本。Linux 还需准备[系统图形库与 USB 权限](#linux-快速运行)。
+
+```bash
+git clone https://github.com/xensexyq/DAP-Downloader.git
+cd DAP-Downloader
+```
 
 ## 创建独立 Conda 环境
 
@@ -43,18 +66,6 @@ python dap_tool.py
 ## Windows 快速运行
 
 双击 `run_tool.bat`。脚本会检查 Python、pyOCD 和 PySide6，并在缺少依赖时安装 `requirements.txt`。
-
-## 基本使用
-
-Windows 和 Linux 使用相同界面和下载流程：
-
-1. 将 CMSIS-DAP 调试器的 `SWDIO`、`SWCLK`、`GND`、`NRST` 和 `VDD_TARGET` 接到目标板。
-2. 选择固件、DAP 探针和目标芯片参数。
-3. 点击“开始下载”，核对确认窗口后继续。
-
-优先选择 ELF 文件，因为 ELF 自带烧录地址。选择 BIN 文件时，默认基地址为 `0x08000000`。
-
-CMSIS Pack 文件不会提交到 Git 仓库。首次使用时工具会从官方地址下载并缓存，之后可直接复用。Windows 使用 `data/packs`，Linux 缓存目录见下文。
 
 ## Linux 快速运行
 
@@ -146,6 +157,35 @@ XDG 变量必须是绝对路径；相对路径会被忽略。程序目录可以�
 - **`externally-managed-environment`**：请使用 `.venv` / Conda 安装，不使用 `sudo pip` 或 `--break-system-packages`。
 - **WSL / 容器检测不到探针**：宿主 USB 设备必须显式传入运行环境；这些环境未纳入当前适配验证范围。
 
+## 基本使用
+
+Windows 和 Linux 使用相同界面和下载流程：
+
+1. 将 CMSIS-DAP 调试器的 `SWDIO`、`SWCLK`、`GND`、`NRST` 和 `VDD_TARGET` 接到目标板。
+2. 选择固件、DAP 探针和目标芯片参数。
+3. 点击“开始下载”，核对确认窗口后继续。
+
+优先选择 ELF 文件，因为 ELF 自带烧录地址。选择 BIN 文件时，默认基地址为 `0x08000000`。
+
+CMSIS Pack 文件不会提交到 Git 仓库。首次使用时工具会从官方地址下载并缓存，之后可直接复用。Windows 使用 `data/packs`，Linux 缓存目录见下文。
+
+## 项目结构
+
+```text
+dap_tool.py         PySide6 图形入口
+dap_core.py         固件、探针与下载逻辑
+dap_platform.py     平台目录与运行支持
+run_tool.*          源码运行入口
+build_linux.sh      Linux 分发包构建
+build_exe.bat       Windows EXE 构建
+scripts/ + udev/    Linux 设备访问规则
+test_*.py           核心、平台与 GUI 回归测试
+```
+
+## 文档
+
+[Windows 运行](#windows-快速运行) · [Linux 运行及排障](#linux-快速运行) · [Linux 打包](#打包-linux-独立程序) · [Windows 打包](#打包独立-exe) · [结果判断](#下载结果判断)
+
 ## 打包 Linux 独立程序
 
 在 Linux 本机运行：
@@ -217,3 +257,7 @@ Erased ... bytes, programmed ... bytes
 ## 安全说明
 
 下载操作会擦除并覆盖目标 MCU 的相关 Flash 区域。开启读保护或安全产品状态时，请先使用 STM32CubeProgrammer 检查 Option Bytes，不要盲目执行整片擦除。
+
+## 许可
+
+当前仓库未声明统一许可证；现有第三方代码、模型和依赖的署名及许可仍须分别遵守。本次文档整理不新增或变更授权。
